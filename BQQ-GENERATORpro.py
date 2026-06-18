@@ -54,6 +54,12 @@ def init_enterprise_state():
         
     if 'app_settings' not in st.session_state:
         st.session_state.app_settings = {"company_name": "Global Builders Inc", "white_label": False, "cloud_sync": True, "offline_mode": False}
+        
+    # New states for AI Assistant Chat
+    if "ai_messages" not in st.session_state:
+        st.session_state.ai_messages = [
+            {"role": "assistant", "content": "Hello! I am your AI Construction Assistant. Ask me about house costs in Punjab, brick calculations, or roof slab estimates!"}
+        ]
 
 init_enterprise_state()
 
@@ -365,9 +371,257 @@ def render_reporting():
     with col_r2:
         st.subheader("Advanced Analytical Resource Projections & Cost Diagnostics")
         trades_cost_distribution = st.session_state.master_boq.groupby("Trade")["Qty"].sum().reset_index()
-        fig_pie = px.pie(trades_cost_distribution, values="Qty", names="Trade", title="Aggregated Direct Budget Expenditure Distribution by Core Trade Divisions", hole=0.4)
-        fig_pie.update_layout(template="plotly_dark")
-        st.plotly_chart(fig_pie, use_container_width=True)
+        if not trades_cost_distribution.empty:
+            fig_pie = px.pie(trades_cost_distribution, values="Qty", names="Trade", title="Aggregated Direct Budget Expenditure Distribution by Core Trade Divisions", hole=0.4)
+            fig_pie.update_layout(template="plotly_dark")
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("No active cost distributions to map.")
+
+# ==========================================
+# NEW MODULE 8: 🏡 HOME PLANNING & ESTIMATORS (Features 1, 2, 3)
+# ==========================================
+def render_home_estimators():
+    st.title("🏡 Home Configuration & Planning Tools")
+    
+    t1, t2, t3 = st.tabs(["Cost Calculator", "Dream Home Planner", "Budget-Based Suggestions"])
+    
+    with t1:
+        st.subheader("Feature 1: Home Construction Cost Calculator")
+        st.write("Enter your plot area to get an instant baseline estimate.")
+        area = st.number_input("Enter Total Built-up Area (Sq Ft)", min_value=100, value=1200)
+        quality = st.selectbox("Select Construction Quality Grade", ["Standard (₹1500/sqft)", "Premium (₹2000/sqft)", "Luxury (₹2800/sqft)"])
+        rate = 1500 if "Standard" in quality else 2000 if "Premium" in quality else 2800
+        st.success(f"Estimated Baseline Construction Cost: **₹ {area * rate:,.2f}**")
+        
+    with t2:
+        st.subheader("Feature 2: Dream Home Planner")
+        st.write("Select your desired property type to view baseline requirements.")
+        home_type = st.selectbox("Select Target Property Type", ["1BHK", "2BHK", "3BHK", "Duplex", "Villa"])
+        
+        plan_specs = {
+            "1BHK": {"area": "500 - 700 sq ft", "cost": "₹ 8L - ₹ 12L"},
+            "2BHK": {"area": "800 - 1100 sq ft", "cost": "₹ 15L - ₹ 22L"},
+            "3BHK": {"area": "1200 - 1600 sq ft", "cost": "₹ 24L - ₹ 35L"},
+            "Duplex": {"area": "1800 - 2500 sq ft", "cost": "₹ 40L - ₹ 65L"},
+            "Villa": {"area": "3000+ sq ft", "cost": "₹ 80L+"}
+        }
+        col1, col2 = st.columns(2)
+        col1.metric("Recommended Ideal Area", plan_specs[home_type]["area"])
+        col2.metric("Approximate Budget Required", plan_specs[home_type]["cost"])
+        
+    with t3:
+        st.subheader("Feature 3: Budget-Based House Suggestion")
+        st.write("Enter your budget and we'll suggest what you can build.")
+        user_budget = st.number_input("Enter your maximum budget (₹)", min_value=100000, value=2000000, step=100000)
+        sqft_possible = user_budget / 1800 # Assuming ₹1800/sqft average
+        st.info(f"With a budget of **₹ {user_budget:,.2f}**, you can build a house of approximately **{sqft_possible:.0f} sq ft**.")
+        if sqft_possible < 600:
+            st.success("Suggestion: A spacious 1BHK or compact 2BHK is perfect for this budget.")
+        elif sqft_possible < 1200:
+            st.success("Suggestion: A comfortable 2BHK or compact 3BHK will fit well.")
+        elif sqft_possible < 2000:
+            st.success("Suggestion: A large 3BHK or a modest Duplex is achievable.")
+        else:
+            st.success("Suggestion: You can build a premium Duplex or Villa!")
+
+# ==========================================
+# NEW MODULE 9: 🧱 MATERIAL & TRADE CALCULATORS (Features 6, 7, 11-18)
+# ==========================================
+def render_material_calculators():
+    st.title("🧮 Comprehensive Material & Trade Calculators")
+    st.write("Granular calculators for every stage of your build.")
+    
+    t1, t2, t3, t4 = st.tabs(["Material Breakdown", "Core Materials (Brick, Concrete, Steel)", "Finishes (Paint, Tiles)", "Trade Budgets (Plumb, Elec, Int, Foundation)"])
+    
+    with t1:
+        st.subheader("Feature 6: Material Cost Breakdown")
+        total_cost = st.number_input("Enter Total Estimated Project Cost (₹) to see breakdown", value=5000000)
+        
+        breakdown_data = pd.DataFrame({
+            "Material/Trade": ["Cement", "Steel", "Bricks", "Sand & Aggregate", "Tiles & Flooring", "Paint & Finishes", "Plumbing", "Electrical", "Woodwork & Doors"],
+            "Percentage": [14, 22, 10, 10, 8, 5, 7, 8, 16]
+        })
+        breakdown_data["Cost (₹)"] = (breakdown_data["Percentage"] / 100) * total_cost
+        
+        fig = px.pie(breakdown_data, values='Percentage', names='Material/Trade', title='Standard Material Cost Distribution')
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(breakdown_data, use_container_width=True)
+
+    with t2:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.subheader("Feature 13: Brick Calc")
+            wall_area = st.number_input("Total Wall Area (Sq Ft)", value=1000)
+            st.metric("Bricks Needed (9\" wall)", f"{int(wall_area * 10)} units")
+        with col2:
+            st.subheader("Feature 14: Concrete Calc")
+            vol = st.number_input("Concrete Volume (Cu Ft)", value=100)
+            st.metric("Cement Bags", f"{int(vol * 0.22)} bags")
+            st.metric("Sand", f"{vol * 0.44:.1f} Cu Ft")
+            st.metric("Aggregate", f"{vol * 0.88:.1f} Cu Ft")
+        with col3:
+            st.subheader("Feature 15: Steel Calc")
+            slab_area = st.number_input("Slab Area (Sq Ft)", value=1200)
+            st.metric("Rebar Needed", f"{slab_area * 3.5:.1f} Kg")
+
+    with t3:
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            st.subheader("Feature 11: Paint Calc")
+            paint_area = st.number_input("Plastered Area (Sq Ft)", value=2500)
+            st.metric("Primer Needed", f"{paint_area / 120:.1f} Liters")
+            st.metric("Paint Needed (2 coats)", f"{paint_area / 80:.1f} Liters")
+        with col_f2:
+            st.subheader("Feature 12: Tile Calc")
+            floor_area = st.number_input("Floor Area (Sq Ft)", value=1200)
+            tile_size = st.selectbox("Tile Size", ["2x2 ft", "2x4 ft", "1x1 ft"])
+            sqft_per_tile = 4 if tile_size == "2x2 ft" else 8 if tile_size == "2x4 ft" else 1
+            st.metric("Tiles Needed (+5% waste)", f"{int((floor_area / sqft_per_tile) * 1.05)} tiles")
+
+    with t4:
+        st.subheader("Trade & Foundation Budgets")
+        base_area = st.number_input("Enter Built-up Area for Trade Estimates (Sq Ft)", value=1200)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Feature 7: Foundation Est.", f"₹ {base_area * 350:,.2f}")
+        c2.metric("Feature 16: Plumbing Est.", f"₹ {base_area * 120:,.2f}")
+        c3.metric("Feature 17: Electrical Est.", f"₹ {base_area * 140:,.2f}")
+        c4.metric("Feature 18: Interior Est.", f"₹ {base_area * 500:,.2f}")
+
+# ==========================================
+# NEW MODULE 10: 🏦 FINANCE & TRACKING (Features 5, 8, 10, 19)
+# ==========================================
+def render_finance_and_tracking():
+    st.title("🏦 Construction Finance & Cost Tracking")
+    
+    t1, t2, t3, t4 = st.tabs(["Loan Estimator", "Floor-Wise Cost", "Stage Tracker", "Monthly Expense"])
+    
+    with t1:
+        st.subheader("Feature 5: Construction Loan Estimator")
+        p = st.number_input("Loan Amount (₹)", value=2500000)
+        r = st.number_input("Annual Interest Rate (%)", value=8.5)
+        n = st.number_input("Tenure (Years)", value=15)
+        
+        if st.button("Calculate EMI"):
+            r_mon = (r / 12) / 100
+            n_mon = n * 12
+            emi = p * r_mon * ((1 + r_mon)**n_mon) / (((1 + r_mon)**n_mon) - 1)
+            st.success(f"Estimated Monthly EMI: **₹ {emi:,.2f}**")
+            st.info(f"Total Interest Payable: ₹ {(emi * n_mon) - p:,.2f}")
+
+    with t2:
+        st.subheader("Feature 8: Floor-Wise Cost Estimation")
+        total_est = st.number_input("Total Estimated Multi-Story Project Cost (₹)", value=8000000)
+        st.write("Typical cost distribution for a G+2 structure:")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Ground Floor (w/ Foundation) [45%]", f"₹ {total_est * 0.45:,.2f}")
+        c2.metric("First Floor [30%]", f"₹ {total_est * 0.30:,.2f}")
+        c3.metric("Second Floor/Terrace [25%]", f"₹ {total_est * 0.25:,.2f}")
+
+    with t3:
+        st.subheader("Feature 10: Construction Stage Cost Tracker")
+        st.write("Track funding requirements based on build phase.")
+        tracker_df = pd.DataFrame({
+            "Stage": ["Foundation", "Superstructure/Framing", "Roofing", "Plumbing/Electrical", "Flooring/Finishes"],
+            "Fund Allocation": ["15%", "35%", "15%", "15%", "20%"],
+            "Status": ["Completed", "In Progress", "Pending", "Pending", "Pending"]
+        })
+        st.dataframe(tracker_df, use_container_width=True)
+        st.progress(0.50, text="Overall Financial Completion: 50%")
+
+    with t4:
+        st.subheader("Feature 19: Monthly Construction Expense Tracker")
+        st.write("Track actual spending against projected budgets.")
+        expense_data = pd.DataFrame({
+            "Month": ["Jan", "Feb", "Mar", "Apr", "May"],
+            "Budget (₹)": [500000, 800000, 400000, 600000, 300000],
+            "Actual Spend (₹)": [480000, 850000, 410000, 580000, 0]
+        })
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=expense_data['Month'], y=expense_data['Budget (₹)'], name='Budget'))
+        fig.add_trace(go.Bar(x=expense_data['Month'], y=expense_data['Actual Spend (₹)'], name='Actual Spend'))
+        fig.update_layout(barmode='group', title="Budget vs Actual Spend Tracker")
+        st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# NEW MODULE 11: 📐 ROOM CALCS & PLAN GALLERY (Features 4, 9)
+# ==========================================
+def render_plan_gallery_and_tools():
+    st.title("📐 Architectural Layouts & Space Calculators")
+    
+    t1, t2 = st.tabs(["Room Area Calculator", "House Plan Gallery"])
+    
+    with t1:
+        st.subheader("Feature 4: Room Area Calculator")
+        st.write("Calculate individual room sizes to find total built-up area.")
+        
+        num_rooms = st.number_input("Number of Rooms to Calculate", min_value=1, max_value=10, value=3)
+        total_area = 0
+        for i in range(int(num_rooms)):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                name = st.text_input(f"Room {i+1} Name", f"Room {i+1}")
+            with col2:
+                length = st.number_input(f"Length (ft)", min_value=0.0, value=10.0, key=f"l{i}")
+            with col3:
+                width = st.number_input(f"Width (ft)", min_value=0.0, value=12.0, key=f"w{i}")
+            total_area += (length * width)
+        
+        st.markdown(f"### **Total Usable Carpet Area: {total_area:,.2f} Sq Ft**")
+        st.caption("Note: Add approx 20-30% for walls and common areas to get Super Built-up Area.")
+
+    with t2:
+        st.subheader("Feature 9: House Plan Gallery")
+        st.write("Browse architectural sample references.")
+        
+        # Using placeholder graphics via streamlit columns to represent the gallery
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.info("Modern 2BHK Layout")
+            st.metric("Area", "1100 sqft")
+            st.caption("Open kitchen, 2 baths, balcony.")
+        with col2:
+            st.success("Classic 3BHK Duplex")
+            st.metric("Area", "2200 sqft")
+            st.caption("Double height ceiling, terrace.")
+        with col3:
+            st.warning("Luxury Villa Plot")
+            st.metric("Area", "4500 sqft")
+            st.caption("Pool, 5 beds, home theater.")
+
+# ==========================================
+# NEW MODULE 12: 🤖 AI CHATBOT (Feature 20)
+# ==========================================
+def render_ai_assistant():
+    st.title("🤖 Feature 20: AI Home Construction Assistant")
+    st.write("Ask me anything about construction costs, material estimates, and regional pricing!")
+    
+    # Display chat history
+    for message in st.session_state.ai_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Chat input
+    if prompt := st.chat_input("E.g., 'How much will a 1200 sq ft house cost in Punjab?'"):
+        # Add user message
+        st.session_state.ai_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Generate mock AI response based on keywords
+        with st.chat_message("assistant"):
+            response = "I am a simulated AI assistant for this construction portal. "
+            if "punjab" in prompt.lower() and "cost" in prompt.lower():
+                response = "In Punjab, standard construction currently averages around ₹1,400 to ₹1,800 per sq ft. For a 1200 sq ft house, you should budget approximately ₹16.8 Lakhs to ₹21.6 Lakhs depending on the finishing quality."
+            elif "brick" in prompt.lower():
+                response = "For standard 9-inch brick walls, you generally need about 10 to 11 bricks per square foot of wall area. Let me know your total wall area and I can calculate the exact number!"
+            elif "roof slab" in prompt.lower() or "slab" in prompt.lower():
+                response = "A standard RCC roof slab usually costs about ₹150 to ₹200 per square foot for materials and labor. This includes concrete, steel reinforcement, and shuttering costs."
+            else:
+                response = f"That's a great question about '{prompt}'. Based on current construction metrics, I can help you estimate costs, materials, or structural logistics. Try asking me about regional costs or material quantities!"
+                
+            st.markdown(response)
+            st.session_state.ai_messages.append({"role": "assistant", "content": response})
 
 # ==========================================
 # MAIN OPERATIONAL RUNTIME ENGINE ROUTER
@@ -388,7 +642,12 @@ def main():
                 "📐 Schematic Geometric Takeoff",
                 "🧱 Logistics & Inventory Ledger",
                 "👷 Field Journal Logistics",
-                "📈 Strategic BI Reporting"
+                "📈 Strategic BI Reporting",
+                "🏡 Home Configuration Planners",         # NEW
+                "🧮 Material & Trade Calculators",       # NEW
+                "🏦 Finance & Tracking Hub",             # NEW
+                "📏 Room Calcs & Plan Gallery",          # NEW
+                "💬 AI Construction Chatbot"             # NEW
             ]
         )
         
@@ -413,6 +672,17 @@ def main():
         render_site_management()
     elif module_selector == "📈 Strategic BI Reporting":
         render_reporting()
+    # NEW ROUTES ADDED HERE
+    elif module_selector == "🏡 Home Configuration Planners":
+        render_home_estimators()
+    elif module_selector == "🧮 Material & Trade Calculators":
+        render_material_calculators()
+    elif module_selector == "🏦 Finance & Tracking Hub":
+        render_finance_and_tracking()
+    elif module_selector == "📏 Room Calcs & Plan Gallery":
+        render_plan_gallery_and_tools()
+    elif module_selector == "💬 AI Construction Chatbot":
+        render_ai_assistant()
 
 if __name__ == "__main__":
     main()
