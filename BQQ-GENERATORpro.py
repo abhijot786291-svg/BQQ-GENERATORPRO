@@ -1,9 +1,9 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import streamlit as st # type: ignore
+import pandas as pd # type: ignore
+import numpy as np # type: ignore
 import datetime
-import plotly.express as px
-import plotly.graph_objects as go
+import plotly.express as px # type: ignore
+import plotly.graph_objects as go # type: ignore
 import io
 import time
 import random
@@ -724,16 +724,13 @@ def render_ai_assistant():
             response = "I am a simulated AI assistant for this construction portal. "
             prompt_lower = prompt.lower()
             
+            # --- START OF CONDITIONAL CHAIN ---
             if "punjab" in prompt_lower and "cost" in prompt_lower:
                 response = "In Punjab, standard construction currently averages around ₹1,400 to ₹1,800 per sq ft. For a 1200 sq ft house, you should budget approximately ₹16.8 Lakhs to ₹21.6 Lakhs depending on the finishing quality."
             elif "brick" in prompt_lower:
                 response = "For standard 9-inch brick walls, you generally need about 10 to 11 bricks per square foot of wall area. Let me know your total wall area and I can calculate the exact number!"
             elif "roof slab" in prompt_lower or "slab" in prompt_lower:
                 response = "A standard RCC roof slab usually costs about ₹150 to ₹200 per square foot for materials and labor. This includes concrete, steel reinforcement, and shuttering costs."
-            
-            # ----------------------------------------------------
-            # ADDED FEATURE FEATURE: Live State Context Awareness Integration
-            # ----------------------------------------------------
             elif "project" in prompt_lower or "portfolio" in prompt_lower:
                 project_names = [p["name"] for p in st.session_state.projects]
                 response = f"Scanning system databases... You currently have {len(st.session_state.projects)} projects logged in your workspace: {', '.join(project_names)}."
@@ -741,12 +738,16 @@ def render_ai_assistant():
                 response = f"Checking active warehouse tracking... There are currently {len(st.session_state.inventory)} inventory tracking rows present in the Logistics Ledger repository."
             elif "boq" in prompt_lower or "bill of quantities" in prompt_lower:
                 response = f"Querying item matrices... There are currently {len(st.session_state.master_boq)} analytical ledger items stored in the master BOQ compilation deck."
-                
+            elif "material" in prompt_lower or "cost" in prompt_lower:
+                response = "Material and execution costs vary by structure. Standard global metrics show material acquisition consumes 60-70% of building budgets (Steel ~22%, Cement ~14%, Bricks ~10%). You can see live geo-scaled pricing for your active project under the 'Actuated Financial Matrix' tab, or view detailed material quantities in the 'Material & Trade Calculators' panel!"
             else:
                 response = f"That's a great question about '{prompt}'. Based on current construction metrics, I can help you estimate costs, materials, or structural logistics. Try asking me about regional costs or material quantities!"
+            # --- END OF CONDITIONAL CHAIN ---
                 
+            # All interface updates and system logs execute safely here after matching completes
             st.markdown(response)
             st.session_state.ai_messages.append({"role": "assistant", "content": response})
+            
             # ADDED LOG ENTRY
             log_system_action("AI Chatbot", "Query Answered", f"Successfully addressed prompt: '{prompt[:35]}...'")
 
