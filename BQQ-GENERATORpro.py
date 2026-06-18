@@ -426,6 +426,7 @@ def render_site_management():
 # ==========================================
 # MODULE 7: INSIGHTFUL REPORTING & WHITE-LABEL PIPELINES
 # ==========================================
+st.write("FPDF_AVAILABLE:", FPDF_AVAILABLE)  # Debug line to confirm FPDF availability
 def render_reporting():
     st.title("📈 Strategic Business Intelligence Reports & Branding Control")
     st.write("Generate financial statements, project summaries, and client-ready documentation sets.")
