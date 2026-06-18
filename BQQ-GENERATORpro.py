@@ -1,3 +1,6 @@
+import sys
+st.write("Python executable:", sys.executable)
+st.write("FPDF_AVAILABLE:", FPDF_AVAILABLE) # type: ignore
 import streamlit as st # type: ignore
 import pandas as pd # type: ignore
 import numpy as np # type: ignore
@@ -15,6 +18,7 @@ try:
     from fpdf import FPDF
     FPDF_AVAILABLE = True
 except ImportError:
+    st.error("The `fpdf` library is required for the True-PDF feature. Please install it via `pip install fpdf` to enable this functionality.")
     FPDF_AVAILABLE = False
 
 # ==========================================
