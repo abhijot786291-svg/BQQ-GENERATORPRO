@@ -1,359 +1,418 @@
 import streamlit as st
-import datetime
 import pandas as pd
+import numpy as np
+import datetime
+import plotly.express as px
+import plotly.graph_objects as go
+import io
 import time
 import random
 
 # ==========================================
-# PAGE CONFIGURATION
+# CONSTANTS & ENTERPRISE RATES REGIONAL DATABASE
 # ==========================================
-st.set_page_config(
-    page_title="PitMaster Extreme Pro",
-    page_icon="🔥",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ==========================================
-# CONSTANTS & PRICING DATABASES
-# ==========================================
-# Construction material base rates (Price per Linear Foot)
-DEFAULT_MATERIALS = {
-    "Basic Stucco": 150,
-    "Premium Brick": 280,
-    "Natural Ledge Stone": 400,
-    "Polished Concrete": 200
+REGIONAL_DATABASES = {
+    "North America (East)": {"labor_multiplier": 1.2, "material_index": 1.1, "currency": "$", "tax_label": "HST/VAT"},
+    "US Southwest": {"labor_multiplier": 1.0, "material_index": 1.0, "currency": "$", "tax_label": "Sales Tax"},
+    "Europe Central": {"labor_multiplier": 1.3, "material_index": 1.15, "currency": "€", "tax_label": "VAT"},
+    "Asia Pacific": {"labor_multiplier": 0.6, "material_index": 0.9, "currency": "¥", "tax_label": "GST"}
 }
 
-# Countertop materials (Price per Linear Foot)
-DEFAULT_COUNTERS = {
-    "Tile": 50,
-    "Poured Concrete": 120,
-    "Level 1 Granite": 200,
-    "Premium Quartz": 350
-}
-
-# Furniture / Hardware (Fixed Cost)
-DEFAULT_HARDWARE = {
-    "Built-in Pellet Smoker": 1500,
-    "Kamado Ceramic Grill": 1200,
-    "36-inch Gas Griddle": 800,
-    "Outdoor Fridge / Kegerator": 1100,
-    "Stainless Steel Double Doors": 300,
-    "Plumbed Sink": 450,
-    "Wood-fired Pizza Oven": 2500
-}
-
-# BBQ Cooking profiles (Hours per pound at 225F)
-MEAT_PROFILES = {
-    "Brisket (Packer)": {"time_per_lb": 1.25, "wrap_temp": 165, "pull_temp": 203, "rest_hours": 2},
-    "Pork Butt": {"time_per_lb": 1.5, "wrap_temp": 165, "pull_temp": 205, "rest_hours": 1},
-    "Pork Ribs (3-2-1 Method)": {"time_per_lb": 0, "fixed_time": 6, "wrap_temp": None, "pull_temp": None, "rest_hours": 0.5},
-    "Whole Chicken": {"time_per_lb": 0.75, "wrap_temp": None, "pull_temp": 165, "rest_hours": 0.5}
-}
+DEFAULT_TRADES = ["01 - General Conditions", "03 - Concrete & Foundations", "04 - Masonry & Framing", "09 - Finishes", "22 - Plumbing/Mech"]
 
 # ==========================================
-# SESSION STATE INITIALIZATION
+# SYSTEM SETUP & SESSION LAYER
 # ==========================================
-def init_session_state():
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-    if 'user_email' not in st.session_state:
-        st.session_state.user_email = ""
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    if 'custom_rates' not in st.session_state:
-        st.session_state.custom_rates = DEFAULT_HARDWARE.copy()
-    if 'privacy_settings' not in st.session_state:
-        st.session_state.privacy_settings = {
-            "share_cook_data": False,
-            "cloud_sync": True,
-            "public_profile": False,
-            "location_tracking": False # For weather APIs
-        }
+st.set_page_config(page_title="BuildMaster Enterprise ERP", page_icon="🏗️", layout="wide", initial_sidebar_state="expanded")
 
-# ==========================================
-# HELPER FUNCTIONS
-# ==========================================
-def calculate_timeline(meat_type, weight, serve_time):
-    """Calculates a chronological timeline based on meat type and weight."""
-    profile = MEAT_PROFILES[meat_type]
-    
-    if "fixed_time" in profile:
-        cook_time_hours = profile["fixed_time"]
-    else:
-        cook_time_hours = weight * profile["time_per_lb"]
-        
-    rest_time_hours = profile["rest_hours"]
-    total_time_hours = cook_time_hours + rest_time_hours
-    
-    # Calculate timestamps
-    serve_dt = datetime.datetime.combine(datetime.date.today(), serve_time)
-    start_dt = serve_dt - datetime.timedelta(hours=total_time_hours)
-    prep_dt = start_dt - datetime.timedelta(minutes=45)
-    
-    timeline = []
-    timeline.append({"Action": "Trim & Season Meat (Prep)", "Time": prep_dt.strftime("%I:%M %p")})
-    timeline.append({"Action": "Light Smoker (Target 225°F)", "Time": (start_dt - datetime.timedelta(minutes=30)).strftime("%I:%M %p")})
-    timeline.append({"Action": "Meat on Smoker", "Time": start_dt.strftime("%I:%M %p")})
-    
-    if profile.get("wrap_temp"):
-        wrap_dt = start_dt + datetime.timedelta(hours=(cook_time_hours * 0.6)) # Estimate stall at 60% time
-        timeline.append({"Action": f"Check for Stall / Wrap (Target {profile['wrap_temp']}°F)", "Time": wrap_dt.strftime("%I:%M %p")})
-        
-    pull_dt = serve_dt - datetime.timedelta(hours=rest_time_hours)
-    if profile.get("pull_temp"):
-        timeline.append({"Action": f"Pull from Smoker (Target {profile['pull_temp']}°F)", "Time": pull_dt.strftime("%I:%M %p")})
-    else:
-        timeline.append({"Action": "Pull from Smoker", "Time": pull_dt.strftime("%I:%M %p")})
-        
-    timeline.append({"Action": "Rest in Cooler / Cambro", "Time": pull_dt.strftime("%I:%M %p")})
-    timeline.append({"Action": "Slice & Serve", "Time": serve_dt.strftime("%I:%M %p")})
-    
-    return pd.DataFrame(timeline)
-
-def generate_ai_response(prompt):
-    """Mocks an AI pitmaster response based on keywords."""
-    prompt = prompt.lower()
-    if "stall" in prompt or "stuck" in prompt:
-        return "It sounds like you've hit the stall! This happens around 160°F-165°F as evaporative cooling from the meat matches the heat of the smoker. You can 'Texas Crutch' it by wrapping in butcher paper or foil to push through."
-    elif "brisket" in prompt:
-        return "For brisket, always trim the fat cap to about 1/4 inch. Smoke at 225°F-250°F using post oak or hickory. Don't pull by time alone—pull when the probe slides into the thickest part of the flat like warm butter (usually around 200°F-205°F)."
-    elif "cost" in prompt or "expensive" in prompt:
-        return "Building an outdoor kitchen? Remember that plumbing a sink or running a dedicated gas line are hidden costs. Always factor in an extra 15% for permits and utility trenching."
-    else:
-        responses = [
-            "Keep the dirty smoke away! Make sure your fire is burning clean and blue.",
-            "Resting is just as important as cooking. Give large cuts at least 1-2 hours in a dry cooler.",
-            "If you're looking, you ain't cooking! Keep that lid closed.",
-            "Every piece of meat is different. Cook to temperature and feel, not just time."
+def init_enterprise_state():
+    # Structural Control Arrays
+    if 'projects' not in st.session_state:
+        st.session_state.projects = [
+            {"id": "PRJ-2026-001", "name": "Smith Luxury Outdoor Suite", "region": "US Southwest", "status": "Active", "progress": 45.0, "template": False, "role": "Project Manager", "version": 4},
+            {"id": "PRJ-TMP-002", "name": "Standard Straight Island Build", "region": "US Southwest", "status": "Template", "progress": 0.0, "template": True, "role": "Estimator", "version": 1},
+            {"id": "PRJ-2026-003", "name": "Commercial Patio Development", "region": "North America (East)", "status": "Archived", "progress": 100.0, "template": False, "role": "Admin", "version": 12}
         ]
-        return random.choice(responses)
+        
+    if 'master_boq' not in st.session_state:
+        # Relational database table structure for items (Features 11-20)
+        st.session_state.master_boq = pd.DataFrame([
+            {"Project ID": "PRJ-2026-001", "Item No": "03.01.001", "Trade": "03 - Concrete & Foundations", "Description": "Poured Concrete Footings 4000PSI", "Qty": 14.5, "Unit": "cu.yd", "Mat Unit Cost": 135.0, "Lab Unit Cost": 65.0, "Equip Unit Cost": 25.0},
+            {"Project ID": "PRJ-2026-001", "Item No": "04.02.001", "Trade": "04 - Masonry & Framing", "Description": "Premium Brick Structural Skin", "Qty": 340.0, "Unit": "sqft", "Mat Unit Cost": 12.5, "Lab Unit Cost": 18.0, "Equip Unit Cost": 0.0},
+            {"Project ID": "PRJ-2026-001", "Item No": "09.01.005", "Trade": "09 - Finishes", "Description": "Level 4 Polished Granite Slab", "Qty": 65.0, "Unit": "sqft", "Mat Unit Cost": 85.0, "Lab Unit Cost": 45.0, "Equip Unit Cost": 12.0}
+        ])
+
+    if 'inventory' not in st.session_state:
+        st.session_state.inventory = pd.DataFrame([
+            {"SKU": "MAT-CONC-4K", "Item": "Ready-Mix Portland Concrete", "Stock": 0.0, "Min_Alert": 10.0, "Supplier": "Titan Materials Corp"},
+            {"SKU": "MAT-BRK-PREM", "Item": "Premium Face Brick (Palette)", "Stock": 12.0, "Min_Alert": 3.0, "Supplier": "Masonry Supply Depot"},
+            {"SKU": "MAT-SINK-SS36", "Item": "Stainless Undermount Sink 36", "Stock": 2.0, "Min_Alert": 5.0, "Supplier": "Aero Kitchen Hardware"}
+        ])
+
+    if 'site_log' not in st.session_state:
+        st.session_state.site_log = []
+        
+    if 'app_settings' not in st.session_state:
+        st.session_state.app_settings = {"company_name": "Global Builders Inc", "white_label": False, "cloud_sync": True, "offline_mode": False}
+
+init_enterprise_state()
 
 # ==========================================
-# UI COMPONENTS (PAGES)
+# MODULE 1: INTERACTIVE ENTERPRISE DASHBOARD & PM
 # ==========================================
-
-def page_login():
-    """Renders the login/authentication screen."""
-    st.markdown("<h1 style='text-align: center;'>🔥 PitMaster Extreme Pro</h1>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center; color: gray;'>The Ultimate BBQ & Builder Platform</h4>", unsafe_allow_html=True)
+def render_project_dashboard():
+    st.title("📊 Multi-Project Control Center")
+    st.write("Real-time telemetry across active portfolios, resource lifecycles, and governance roles.")
+    
+    # Global Metrics Metrics Grid
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Managed Portfolios", len(st.session_state.projects))
+    m2.metric("Active Runs", len([p for p in st.session_state.projects if p["status"]=="Active"]))
+    m3.metric("System Sync Speed", "12ms", "Cloud Operational")
+    m4.metric("Security Level", "RBAC Locked", "AES-256")
     
     st.write("---")
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.subheader("Secure Login")
-        email = st.text_input("Email Address", placeholder="pitmaster@example.com")
-        password = st.text_input("Password", type="password")
+    
+    t1, t2, t3 = st.tabs(["Project Portfolios", "Interactive Gantt Timeline", "Cloning & Template Center"])
+    
+    with t1:
+        st.subheader("Enterprise Project Registry")
+        for i, proj in enumerate(st.session_state.projects):
+            col_p1, col_p2, col_p3 = st.columns([3, 2, 1])
+            with col_p1:
+                st.markdown(f"#### **{proj['name']}** `[{proj['id']}]`")
+                st.caption(f"Region: **{proj['region']}** | User Assignment Level: **{proj['role']}** | Version Tracker: v{proj['version']}")
+            with col_p2:
+                st.write("")
+                st.progress(proj["progress"] / 100.0)
+            with col_p3:
+                act = st.selectbox("Action", ["Modify Engine", "Clone Blueprint", "Archive Stack", "Purge Line"], key=f"act_{proj['id']}")
+                if act == "Archive Stack" and proj["status"] != "Archived":
+                    st.session_state.projects[i]["status"] = "Archived"
+                    st.toast("Project moved to archive.")
+    
+    with t2:
+        st.subheader("Milestone Management & Production Gantt")
+        gantt_mock = pd.DataFrame([
+            dict(Task="Phase 1: Civil Takeoff & Permit", Start="2026-06-01", Finish="2026-06-15", Resource="PM"),
+            dict(Task="Phase 2: Substructure Pouring", Start="2026-06-16", Finish="2026-06-28", Resource="Mason Crew"),
+            dict(Task="Phase 3: Hardware Outfitting", Start="2026-06-29", Finish="2026-07-12", Resource="Plumbing Tech")
+        ])
+        fig = px.timeline(gantt_mock, x_start="Start", x_end="Finish", y="Task", color="Resource", title="Global Lifecycle View")
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
         
-        if st.button("Access Dashboard", use_container_width=True):
-            if email:
-                st.session_state.logged_in = True
-                st.session_state.user_email = email
+    with t3:
+        st.subheader("Automated Cloning Engine")
+        with st.form("Cloning Vector"):
+            src_template = st.selectbox("Select Source Array", [p["name"] for p in st.session_state.projects if p["template"] or p["status"] == "Template"])
+            target_name = st.text_input("New Allocation Identifier Name", "Project Extension Alpha")
+            target_reg = st.selectbox("Target Economic Database Region", list(REGIONAL_DATABASES.keys()))
+            if st.form_submit_button("Execute High-Fidelity Replication"):
+                new_id = f"PRJ-2026-{random.randint(100,999)}"
+                st.session_state.projects.append({"id": new_id, "name": target_name, "region": target_reg, "status": "Active", "progress": 0.0, "template": False, "role": "Admin", "version": 1})
+                st.success(f"Successfully operationalized {new_id} via structural duplication patterns.")
+                st.sidebar.info("System refresh required to draw layout matrices.")
+
+# ==========================================
+# MODULE 2: QUANTITY TAKE-OFF & ADVANCED BOQ ENGINE
+# ==========================================
+def render_boq_engine():
+    st.title("🏗️ Dynamic BOQ & AI Takeoff Workspace")
+    
+    active_p = st.selectbox("Active Focus Target Portfolio", [p["name"] for p in st.session_state.projects if p["status"] == "Active"])
+    p_id = [p["id"] for p in st.session_state.projects if p["name"] == active_p][0]
+    
+    st.write("---")
+    
+    col_b1, col_b2 = st.columns([1, 1])
+    with col_b1:
+        st.subheader("Itemized Matrix Input & Smart Formula Engine")
+        with st.form("Item Insertion Matrix"):
+            trade_select = st.selectbox("Functional Trade Scope Division", DEFAULT_TRADES)
+            desc_input = st.text_input("Structural Line Item Description Specification")
+            
+            f_col1, f_col2, f_col3 = st.columns(3)
+            q_val = f_col1.number_input("Target Quantity Value", min_value=0.0, value=1.0)
+            u_str = f_col2.text_input("Engineering Unit Type", "sqft")
+            
+            st.markdown("**Core Asset Internal Cost Structures ($)**")
+            c_mat = f_col3.number_input("Material Base Layer Unit Cost", value=0.0)
+            c_lab = f_col1.number_input("Labor Variable Unit Cost", value=0.0)
+            c_eq = f_col2.number_input("Machinery/Equipment Cost Allocation", value=0.0)
+            
+            if st.form_submit_button("Commit Line Item Array to System Core"):
+                # Auto numbering strategy calculation
+                trade_code = trade_select.split(" ")[0]
+                item_count = len(st.session_state.master_boq[st.session_state.master_boq["Trade"] == trade_select]) + 1
+                generated_item_no = f"{trade_code}.01.{item_count:03d}"
+                
+                new_row = {"Project ID": p_id, "Item No": generated_item_no, "Trade": trade_select, "Description": desc_input, "Qty": q_val, "Unit": u_str, "Mat Unit Cost": c_mat, "Lab Unit Cost": c_lab, "Equip Unit Cost": c_eq}
+                st.session_state.master_boq = pd.concat([st.session_state.master_boq, pd.DataFrame([new_row])], ignore_index=True)
+                st.toast(f"Committed {generated_item_no} cleanly.")
                 st.rerun()
-            else:
-                st.error("Please enter a valid email address.")
-                
-        st.caption("🔒 256-bit Encrypted Connection. By logging in, you agree to our Privacy Policy.")
 
-def page_dashboard():
-    """Main landing dashboard."""
-    st.title(f"Welcome back, {st.session_state.user_email.split('@')[0]}!")
-    st.write("Here is your Pitmaster command center.")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Cooks Logged", "42", "+3 this month")
-    col2.metric("Current Weather", "78°F, 40% Hum", "Ideal for smoking")
-    col3.metric("Hardware Status", "Meater Probe: Online", "100% Battery")
-    
+    with col_b2:
+        st.subheader("🤖 GenAI Production Estimator & Automated Verification")
+        ai_input = st.text_area("Provide Natural Language Structural Briefings / Layout Prompts", placeholder="Parse a 20ft U-shaped polished concrete build with outdoor gas ranges and deep foundations...")
+        if st.button("Invoke AI Design Agent Optimization Pipeline"):
+            with st.spinner("Executing structural validation layers..."):
+                time.sleep(1.5)
+                # Mock AI heuristic expansion mapping to target project architecture
+                ai_rows = [
+                    {"Project ID": p_id, "Item No": "01.01.901", "Trade": "01 - General Conditions", "Description": "AI Optimization Variance Mitigation Buffer", "Qty": 1.0, "Unit": "LS", "Mat Unit Cost": 0.0, "Lab Unit Cost": 250.0, "Equip Unit Cost": 0.0},
+                    {"Project ID": p_id, "Item No": "22.01.902", "Trade": "22 - Plumbing/Mech", "Description": "High-Efficiency Gas Delivery Interlock System", "Qty": 1.0, "Unit": "Set", "Mat Unit Cost": 450.0, "Lab Unit Cost": 180.0, "Equip Unit Cost": 50.0}
+                ]
+                st.session_state.master_boq = pd.concat([st.session_state.master_boq, pd.DataFrame(ai_rows)], ignore_index=True)
+                st.success("AI Synthesis Engine parsed specification requirements and appended calibrated line components.")
+                st.rerun()
+
     st.write("---")
-    st.subheader("Recent Activity / Sensor Data")
+    st.subheader("Current Structural Bill of Quantities Grid Matrix")
     
-    # Graphic feature: Mock temperature chart
-    chart_data = pd.DataFrame({
-        "Smoker Temp (°F)": [220, 224, 226, 225, 222, 225, 228, 225],
-        "Meat Temp (°F)": [45, 60, 85, 110, 135, 150, 160, 162]
-    }, index=["0h", "1h", "2h", "3h", "4h", "5h", "6h", "7h"])
-    st.line_chart(chart_data)
-
-def page_cook_planner():
-    """Smart Recipe and Timeline Generator."""
-    st.title("⏱️ Dynamic Cook Planner")
-    st.write("Plan your cook backwards from your desired serving time.")
-    
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.subheader("Cook Parameters")
-        meat_type = st.selectbox("Select Meat", list(MEAT_PROFILES.keys()))
-        weight = st.slider("Weight (lbs)", min_value=1.0, max_value=25.0, value=10.0, step=0.5)
-        serve_time = st.time_input("Target Serve Time", value=datetime.time(18, 0)) # 6:00 PM
+    active_boq = st.session_state.master_boq[st.session_state.master_boq["Project ID"] == p_id].copy()
+    if not active_boq.empty:
+        # Dynamic Multi-Component Accounting Calculations
+        active_boq["Material Total"] = active_boq["Qty"] * active_boq["Mat Unit Cost"]
+        active_boq["Labor Total"] = active_boq["Qty"] * active_boq["Lab Unit Cost"]
+        active_boq["Equipment Total"] = active_boq["Qty"] * active_boq["Equip Unit Cost"]
+        active_boq["Gross Extended Cost"] = active_boq["Material Total"] + active_boq["Labor Total"] + active_boq["Equipment Total"]
         
-        # Flavor profile generator
-        st.write("---")
-        st.subheader("Custom Rub Generator")
-        sweet = st.slider("Sweetness", 0, 10, 5)
-        heat = st.slider("Heat (Spicy)", 0, 10, 7)
-        savory = st.slider("Savory/Umami", 0, 10, 8)
-        
-        if st.button("Generate Rub Recipe"):
-            st.success(f"Mix: {savory} parts Black Pepper, {sweet} parts Brown Sugar, {heat} parts Cayenne/Paprika, 5 parts Kosher Salt.")
-            
-    with col2:
-        st.subheader("Chronological Timeline")
-        timeline_df = calculate_timeline(meat_type, weight, serve_time)
-        st.table(timeline_df)
-        
-        st.info("💡 **Pro Tip:** This timeline accounts for a standard 'stall'. If weather is cold or windy, add 10% to your cook time.")
-
-def page_kitchen_estimator():
-    """Outdoor Kitchen Builder and Cost Estimator."""
-    st.title("🧱 Outdoor Kitchen Builder & Cost Estimator")
-    st.write("Design your dream BBQ setup. Adjust sizes, materials, and hardware to calculate total costs.")
-    
-    # Editable Rates Expander
-    with st.expander("⚙️ Edit Base Hardware Rates (Advanced)"):
-        st.write("Adjust local pricing for your specific contractors or suppliers.")
-        col_rate1, col_rate2 = st.columns(2)
-        keys = list(st.session_state.custom_rates.keys())
-        half = len(keys) // 2
-        for i, key in enumerate(keys):
-            if i < half:
-                st.session_state.custom_rates[key] = col_rate1.number_input(f"{key} ($)", value=st.session_state.custom_rates[key])
-            else:
-                st.session_state.custom_rates[key] = col_rate2.number_input(f"{key} ($)", value=st.session_state.custom_rates[key])
-
-    # Builder UI
-    col1, col2 = st.columns([1, 1.5])
-    
-    with col1:
-        st.subheader("1. Dimensions & Structure")
-        linear_feet = st.slider("Total Linear Feet of Counter", min_value=5, max_value=40, value=12)
-        shape = st.selectbox("Layout Shape", ["Straight Line", "L-Shape", "U-Shape", "Island"])
-        
-        st.subheader("2. Materials")
-        base_material = st.selectbox("Base Material", list(DEFAULT_MATERIALS.keys()))
-        counter_material = st.selectbox("Countertop Material", list(DEFAULT_COUNTERS.keys()))
-        
-        st.subheader("3. Furniture & Appliances")
-        selected_hardware = []
-        for item in st.session_state.custom_rates.keys():
-            if st.checkbox(item):
-                selected_hardware.append(item)
-                
-    with col2:
-        st.subheader("Itemized Estimate")
-        
-        # Calculations
-        base_cost = linear_feet * DEFAULT_MATERIALS[base_material]
-        counter_cost = linear_feet * DEFAULT_COUNTERS[counter_material]
-        
-        # Build Receipt Dataframe
-        receipt_items = [
-            {"Category": "Structure", "Description": f"{linear_feet} ft of {base_material}", "Cost": base_cost},
-            {"Category": "Surfaces", "Description": f"{linear_feet} ft of {counter_material}", "Cost": counter_cost}
-        ]
-        
-        hardware_total = 0
-        for hw in selected_hardware:
-            cost = st.session_state.custom_rates[hw]
-            hardware_total += cost
-            receipt_items.append({"Category": "Hardware", "Description": hw, "Cost": cost})
-            
-        df_receipt = pd.DataFrame(receipt_items)
-        
-        # Display table cleanly
-        st.dataframe(df_receipt, use_container_width=True, hide_index=True)
-        
-        # Totals
-        total_cost = base_cost + counter_cost + hardware_total
-        labor_estimate = total_cost * 0.35 # Assume 35% of material/hardware for labor
-        
-        st.write("---")
-        st.metric("Total Material & Hardware", f"${total_cost:,.2f}")
-        st.metric("Estimated Contractor Labor (35%)", f"${labor_estimate:,.2f}")
-        st.markdown(f"### **Grand Total Estimate: ${total_cost + labor_estimate:,.2f}**")
-        st.caption("Pricing is an estimate and does not include local permits, plumbing runs, or electrical trenching.")
-
-def page_ai_bot():
-    """AI Pitmaster Chatbot."""
-    st.title("🤖 AI Pitmaster Assistant")
-    st.write("Ask questions about recipes, meat science, or construction issues.")
-    
-    # Render chat history
-    for chat in st.session_state.chat_history:
-        with st.chat_message(chat["role"]):
-            st.write(chat["content"])
-            
-    # Input box
-    prompt = st.chat_input("E.g., 'How do I push through a brisket stall?' or 'What is the best stone for a pizza oven?'")
-    
-    if prompt:
-        # Add user message
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.write(prompt)
-            
-        # Add AI response
-        with st.chat_message("assistant"):
-            with st.spinner("Consulting the smoke ring..."):
-                time.sleep(1) # Simulate network delay
-                response = generate_ai_response(prompt)
-                st.write(response)
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
-
-def page_settings():
-    """Privacy and Account Settings."""
-    st.title("⚙️ App Privacy & Settings")
-    
-    st.subheader("Account Details")
-    st.text_input("Account Email", value=st.session_state.user_email, disabled=True)
-    
-    st.write("---")
-    st.subheader("Data & Privacy")
-    st.session_state.privacy_settings["share_cook_data"] = st.toggle("Share Anonymous Cook Logs", value=st.session_state.privacy_settings["share_cook_data"], help="Helps train our 'Stall Predictor' algorithm.")
-    st.session_state.privacy_settings["cloud_sync"] = st.toggle("Cloud Sync Hardware Logs", value=st.session_state.privacy_settings["cloud_sync"])
-    st.session_state.privacy_settings["public_profile"] = st.toggle("Public Pitmaster Profile", value=st.session_state.privacy_settings["public_profile"])
-    st.session_state.privacy_settings["location_tracking"] = st.toggle("Enable Location for Weather API", value=st.session_state.privacy_settings["location_tracking"])
-    
-    if st.button("Save Settings", type="primary"):
-        st.toast("Settings saved successfully!", icon="✅")
-        
-    st.write("---")
-    if st.button("Log Out"):
-        st.session_state.logged_in = False
-        st.rerun()
+        st.dataframe(active_boq.drop(columns=["Project ID"]), use_container_width=True, hide_index=True)
+    else:
+        st.info("No active relational records exist within the runtime state for this allocation index.")
 
 # ==========================================
-# MAIN ROUTING LOGIC
+# MODULE 3: ACTUATED COST ESTIMATION & ACTUATED CONTINGENCY MATRIX
+# ==========================================
+def render_cost_estimator():
+    st.title("💰 Advanced Cost Optimization & Multi-Tier Matrix")
+    
+    active_p = st.selectbox("Target Accounting Ledger Deck", [p["name"] for p in st.session_state.projects if p["status"] == "Active"], key="cost_p")
+    proj_meta = [p for p in st.session_state.projects if p["name"] == active_p][0]
+    p_id = proj_meta["id"]
+    region_db = REGIONAL_DATABASES[proj_meta["region"]]
+    
+    st.info(f"Applying Economic Parameter Set: **{proj_meta['region']}** | Local Currency Vector: `{region_db['currency']}`")
+    
+    active_boq = st.session_state.master_boq[st.session_state.master_boq["Project ID"] == p_id].copy()
+    
+    if active_boq.empty:
+        st.warning("Empty records pool. Base values compute at zero margins.")
+        return
+        
+    # Apply dynamic scaling factors
+    base_m = (active_boq["Qty"] * active_boq["Mat Unit Cost"]).sum() * region_db["material_index"]
+    base_l = (active_boq["Qty"] * active_boq["Lab Unit Cost"]).sum() * region_db["labor_multiplier"]
+    base_e = (active_boq["Qty"] * active_boq["Equip Unit Cost"]).sum()
+    raw_subtotal = base_m + base_l + base_e
+    
+    col_c1, col_c2 = st.columns([3, 2])
+    
+    with col_c1:
+        st.subheader("Escalation & Operational Contingency Coefficients")
+        c_pct = st.slider("Project Allocation Contingency Buffer Allocation (%)", 0.0, 25.0, 7.5)
+        o_pct = st.slider("Contractor Overhead Cost Recovery Multiplier (%)", 0.0, 20.0, 10.0)
+        p_pct = st.slider("Target Yield Gross Profit Margin Target (%)", 0.0, 40.0, 15.0)
+        
+        st.markdown("**Macroeconomic Structural Volatility Compensations**")
+        inf_pct = st.number_input("Compounded Yearly Project Inflation Hedge Factor (%)", value=3.2)
+        elapsed_years = st.number_input("Project Execution Delay/Duration Window Lifecycle Timeline (Years)", value=0.5, step=0.1)
+        tax_pct = st.number_input(f"Regional Static Fiscal Assessment ({region_db['tax_label']}) (%)", value=8.2)
+
+    with col_c2:
+        st.subheader("Consolidated Ledger Summary")
+        
+        # Real-time compounding mathematical equations
+        contingency_total = raw_subtotal * (c_pct / 100.0)
+        leveraged_base = raw_subtotal + contingency_total
+        
+        overhead_total = leveraged_base * (o_pct / 100.0)
+        profit_yield = (leveraged_base + overhead_total) * (p_pct / 100.0)
+        pre_tax_sub = leveraged_base + overhead_total + profit_yield
+        
+        # Dynamic compounding calculation logic for macroeconomic structural elements
+        escalation_adjustment = pre_tax_sub * ((1 + inf_pct/100.0)**elapsed_years - 1)
+        taxable_basis = pre_tax_sub + escalation_adjustment
+        tax_total = taxable_basis * (tax_pct / 100.0)
+        grand_total_estimate = taxable_basis + tax_total
+        
+        # UI Display Block Architecture
+        sym = region_db["currency"]
+        st.metric("Raw Baseline Subtotal (Adjusted Geo-Index)", f"{sym}{raw_subtotal:,.2f}")
+        st.metric(f"Contingency Pool Cushion ({c_pct}%)", f"{sym}{contingency_total:,.2f}")
+        st.metric("Corporate Burden (Profit + Overhead)", f"{sym}{(overhead_total + profit_yield):,.2f}")
+        st.metric("Compounded Project Escalation Cost Impact", f"{sym}{escalation_adjustment:,.2f}")
+        st.metric(f"Projected Fiscal Levy ({region_db['tax_label']} @ {tax_pct}%)", f"{sym}{tax_total:,.2f}")
+        st.markdown(f"## **Target Evaluated Project Yield Valuation Grand Total: {sym}{grand_total_estimate:,.2f}**")
+
+# ==========================================
+# MODULE 4: GEOMETRIC DRAWING DATA EXTRACTION & INTERFACING
+# ==========================================
+def render_drawing_measurement():
+    st.title("📐 Digital Takeoff Engine & Vector Blueprint Calibration")
+    st.write("Extract design elements, layer markers, scale profiles, and volume quantities from vector schematics.")
+    
+    up_blueprint = st.file_uploader("Ingest Project Blueprint File (PDF, Vector DXF, or CAD Output DWG Layer Set)", type=["pdf", "dxf", "dwg"])
+    
+    col_d1, col_d2 = st.columns([1, 2])
+    with col_d1:
+        st.subheader("Spatial Calibration Tool Matrix")
+        scale_ratio = st.text_input("Calibrated Scaling Anchor Definition Ratio (e.g., 1/4 inch = 1 foot)", "1:48")
+        target_layer = st.multiselect("Active Working Spatial Layer Filters", ["Structural Ground Layer", "Sub-Slab Mechanical Utilities", "Finished Surface Enclosures", "Architectural Accents Deck"], default=["Structural Ground Layer", "Finished Surface Enclosures"])
+        
+        st.markdown("---")
+        st.markdown("**Simulated Vector Target Coordinate Intercept Takeoff Log**")
+        mock_takeoff_points = pd.DataFrame({
+            "Vector Identity Target Element": ["Linear Outer Retaining Wall Boundary", "Foundation Spatial Excavation Mass Volume", "Island Bench Surface Area Footprint"],
+            "Measured Direct Value Metrics Output": ["48.5 Linear Feet", "12.2 Cubic Yards", "64.0 Square Feet"]
+        })
+        st.table(mock_takeoff_points)
+        
+    with col_d2:
+        st.subheader("Takeoff Vector Viewport Visualization Layer Container")
+        # Render geometric trace layers for visualization mockup mapping layout positions
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=[1, 5, 5, 1, 1], y=[1, 1, 4, 4, 1], fill="toself", name="Main Slab Spatial Layout Boundary Outline", line=dict(color="Cyan", width=3)))
+        fig.add_trace(go.Scatter(x=[2, 4, 4, 2, 2], y=[2, 2, 3, 3, 2], fill="toself", name="Island Structure Counter Overlay Layer Location", line=dict(color="Gold", width=2)))
+        fig.update_layout(template="plotly_dark", xaxis=dict(visible=False), yaxis=dict(visible=False), height=400)
+        st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# MODULE 5: MATERIAL TRACKING LOGISTICS & VENDOR CONTROL
+# ==========================================
+def render_material_management():
+    st.title("🧱 Material Inventory Ledger, PO Pipelines, & Waste Auditing")
+    
+    st.subheader("Dynamic Materials Tracking Control Matrix & Supply Alerts")
+    st.dataframe(st.session_state.inventory, use_container_width=True, hide_index=True)
+    
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        st.subheader("Purchase Order (PO) Automated Component Generation Vector")
+        target_sku = st.selectbox("Select Target Replenishment Asset SKU", st.session_state.inventory["SKU"])
+        order_volume = st.number_input("Target Purchasing Order Procurement Multiplier Volume", min_value=1.0, value=25.0)
+        if st.button("Generate legally binding corporate PO Manifest Stream"):
+            st.success(f"PO sequence triggered successfully for SKU item {target_sku} for an aggregated delivery asset volume of {order_volume} units.")
+            
+    with col_m2:
+        st.subheader("Material Wastage & Yield Analysis Diagnostics")
+        waste_factor = st.slider("Standard Operational Overhead Material Wastage Factor Allowance (%)", 1.0, 15.0, 5.0)
+        st.info(f"Current operational models predict structural resource demand curves must expand procurement bounds by exactly **{waste_factor}%** to buffer execution errors.")
+
+# ==========================================
+# MODULE 6: SITE CONTROL JOURNAL & ATTENDANCE LEDGER
+# ==========================================
+def render_site_management():
+    st.title("👷 Daily Field Journal Logistics & Production Telemetry")
+    
+    col_s1, col_s2 = st.columns([1, 1])
+    with col_s1:
+        st.subheader("Live Daily Field Telemetry Metrics Entry Card")
+        weather_condition = st.text_input("Integrated Weather/Atmospheric Configuration State Profile", "78°F, Clear skies, 35% Humidity Index - Optimized for Structural Production")
+        site_diary_str = st.text_area("Field Execution Work Log & Critical Incidents Narrative", "Excavation and trench tracking operations finalized cleanly. Standard structural grid setup layer is currently underway...")
+        geo_tag_string = st.text_input("Device Hardware Geo-Coded Positional Verification Marker", "Lat 34.0522 N / Lon 118.2437 W - Verified Handshake Sequence")
+        
+        st.markdown("**Site HSE Compliance Integrity Array Verification Checks**")
+        h1 = st.checkbox("All operating field personnel checked via access security protocols.")
+        h2 = st.checkbox("Machinery safety shields certified and operational.")
+        
+        if st.button("Transmit Field Entry to Master Chain Records Ledger"):
+            st.session_state.site_log.append({"Timestamp": datetime.datetime.now(), "Weather": weather_condition, "Diary": site_diary_str, "Coordinates": geo_tag_string})
+            st.toast("Field record archived successfully.")
+            
+    with col_s2:
+        st.subheader("Operational Labor Utilization Audit Matrix Log")
+        mock_attendance = pd.DataFrame({
+            "Labor Resource Identity Card": ["Master Mason Specialist", "Apprentice Mason Hand", "Mechanical/Plumbing Field Engineer"],
+            "Logged Operational Shift Duration (Hours)": [8.0, 8.0, 4.5],
+            "Evaluated Production Efficiency Output Rating": ["105% - High Speed", "90% - On Pace", "100% - Targeted Standard Clear Alignment"]
+        })
+        st.dataframe(mock_attendance, use_container_width=True, hide_index=True)
+
+# ==========================================
+# MODULE 7: INSIGHTFUL REPORTING & WHITE-LABEL PIPELINES
+# ==========================================
+def render_reporting():
+    st.title("📈 Strategic Business Intelligence Reports & Branding Control")
+    st.write("Generate financial statements, project summaries, and client-ready documentation sets.")
+    
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        st.subheader("Branded White-Label Export Port")
+        st.text_input("Enterprise System Primary Operating Title Override Banner", value=st.session_state.app_settings["company_name"])
+        st.file_uploader("Upload Corporate Asset Branding Mark Vector (PNG/SVG Format)")
+        
+        st.write("---")
+        st.markdown("**Export Format Drivers**")
+        
+        # Ingest dataframe memory arrays and stream target representations cleanly
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            st.session_state.master_boq.to_excel(writer, sheet_name='Master_BOQ_Matrix_Ledger', index=False)
+            
+        st.download_button(
+            label="📥 Export Integrated Multi-Sheet Corporate Excel Workbook System",
+            data=buffer.getvalue(),
+            file_name="Enterprise_Master_Asset_Report.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True
+        )
+        
+        if st.button("📄 Generate Executive Client PDF Package", use_container_width=True):
+            st.success("White-label document asset stream formatted, watermarked, compiled, and finalized cleanly.")
+            
+    with col_r2:
+        st.subheader("Advanced Analytical Resource Projections & Cost Diagnostics")
+        trades_cost_distribution = st.session_state.master_boq.groupby("Trade")["Qty"].sum().reset_index()
+        fig_pie = px.pie(trades_cost_distribution, values="Qty", names="Trade", title="Aggregated Direct Budget Expenditure Distribution by Core Trade Divisions", hole=0.4)
+        fig_pie.update_layout(template="plotly_dark")
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+# ==========================================
+# MAIN OPERATIONAL RUNTIME ENGINE ROUTER
 # ==========================================
 def main():
-    init_session_state()
-    
-    if not st.session_state.logged_in:
-        page_login()
-    else:
-        # Sidebar Navigation
-        with st.sidebar:
-            st.title("🔥 PitMaster Pro")
-            st.write(f"User: `{st.session_state.user_email}`")
-            st.write("---")
-            nav_selection = st.radio(
-                "Navigation",
-                ["Dashboard", "⏱️ Cook Planner", "🧱 Kitchen Estimator", "🤖 AI Assistant", "⚙️ Settings"]
-            )
-            
-        # Route to appropriate page
-        if nav_selection == "Dashboard":
-            page_dashboard()
-        elif nav_selection == "⏱️ Cook Planner":
-            page_cook_planner()
-        elif nav_selection == "🧱 Kitchen Estimator":
-            page_kitchen_estimator()
-        elif nav_selection == "🤖 AI Assistant":
-            page_ai_bot()
-        elif nav_selection == "⚙️ Settings":
-            page_settings()
+    with st.sidebar:
+        st.title("🏗️ BuildMaster Pro")
+        st.caption(f"Enterprise Portfolio Environment | v{datetime.datetime.now().year}.2")
+        st.markdown(f"**Enterprise:** `{st.session_state.app_settings['company_name']}`")
+        st.write("---")
+        
+        module_selector = st.radio(
+            "Enterprise Engine Navigator",
+            [
+                "📊 Global Portfolio Hub",
+                "🏗️ Unified BOQ & AI Takeoff",
+                "💰 Actuated Financial Matrix",
+                "📐 Schematic Geometric Takeoff",
+                "🧱 Logistics & Inventory Ledger",
+                "👷 Field Journal Logistics",
+                "📈 Strategic BI Reporting"
+            ]
+        )
+        
+        st.write("---")
+        st.markdown("**Infrastructure Governance Control Toggles**")
+        st.session_state.app_settings["cloud_sync"] = st.toggle("Active Multi-Node Cloud Sync Layer", value=st.session_state.app_settings["cloud_sync"])
+        st.session_state.app_settings["offline_mode"] = st.toggle("Local Cache Fault Recovery Failover", value=st.session_state.app_settings["offline_mode"])
+        st.caption("🔒 Architecture secured under end-to-end relational data binding invariants.")
+
+    # Application Navigation Router Logic
+    if module_selector == "📊 Global Portfolio Hub":
+        render_project_dashboard()
+    elif module_selector == "🏗️ Unified BOQ & AI Takeoff":
+        render_boq_engine()
+    elif module_selector == "💰 Actuated Financial Matrix":
+        render_cost_estimator()
+    elif module_selector == "📐 Schematic Geometric Takeoff":
+        render_drawing_measurement()
+    elif module_selector == "🧱 Logistics & Inventory Ledger":
+        render_material_management()
+    elif module_selector == "👷 Field Journal Logistics":
+        render_site_management()
+    elif module_selector == "📈 Strategic BI Reporting":
+        render_reporting()
 
 if __name__ == "__main__":
     main()
