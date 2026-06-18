@@ -569,7 +569,7 @@ END OF REPORT MANIFEST
                         use_container_width=True
                     )
         else:
-            st.error("The `fpdf` library is required for the True-PDF feature. Please run: `pip install fpdf`")
+            st.error("The `fpdf` library is required for the True-PDF feature. Please install it via `pip install fpdf` to enable this functionality.")
             
     with col_r2:
         st.subheader("Advanced Analytical Resource Projections & Cost Diagnostics")
