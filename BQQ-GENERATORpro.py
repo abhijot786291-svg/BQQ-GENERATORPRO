@@ -7,6 +7,15 @@ import plotly.graph_objects as go # type: ignore
 import io
 import time
 import random
+import sqlite3
+import json
+import tempfile
+
+try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+except ImportError:
+    FPDF_AVAILABLE = False
 
 # ==========================================
 # CONSTANTS & ENTERPRISE RATES REGIONAL DATABASE
@@ -21,12 +30,68 @@ REGIONAL_DATABASES = {
 DEFAULT_TRADES = ["01 - General Conditions", "03 - Concrete & Foundations", "04 - Masonry & Framing", "09 - Finishes", "22 - Plumbing/Mech"]
 
 # ==========================================
+# ADDED FEATURE 3: PERSISTENT STORAGE (SQLITE)
+# ==========================================
+def save_state_to_db():
+    """Background utility to synchronize Streamlit memory arrays into SQLite persistence."""
+    try:
+        conn = sqlite3.connect("buildmaster_enterprise.db")
+        # Save DataFrames natively into SQL tables
+        st.session_state.master_boq.to_sql('master_boq', conn, if_exists='replace', index=False)
+        st.session_state.inventory.to_sql('inventory', conn, if_exists='replace', index=False)
+        
+        # Save Lists/Dicts into a JSON string table
+        c = conn.cursor()
+        c.execute('CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, json_data TEXT)')
+        c.execute('REPLACE INTO app_state (key, json_data) VALUES (?, ?)', ('projects', json.dumps(st.session_state.projects)))
+        c.execute('REPLACE INTO app_state (key, json_data) VALUES (?, ?)', ('action_history', json.dumps(st.session_state.action_history)))
+        c.execute('REPLACE INTO app_state (key, json_data) VALUES (?, ?)', ('site_log', json.dumps(st.session_state.site_log, default=str)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Database Sync Error: {e}")
+
+def load_state_from_db():
+    """Attempts to pull memory states from the SQLite database."""
+    try:
+        conn = sqlite3.connect("buildmaster_enterprise.db")
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='app_state'")
+        if c.fetchone():
+            c.execute('SELECT key, json_data FROM app_state')
+            rows = c.fetchall()
+            db_state = {row[0]: json.loads(row[1]) for row in rows}
+            
+            if 'projects' in db_state: st.session_state.projects = db_state['projects']
+            if 'action_history' in db_state: st.session_state.action_history = db_state['action_history']
+            if 'site_log' in db_state: st.session_state.site_log = db_state['site_log']
+            
+            st.session_state.master_boq = pd.read_sql('SELECT * FROM master_boq', conn)
+            st.session_state.inventory = pd.read_sql('SELECT * FROM inventory', conn)
+            conn.close()
+            return True
+        conn.close()
+    except Exception as e:
+        print(f"Database Load Error: {e}")
+    return False
+
+
+# ==========================================
 # SYSTEM SETUP & SESSION LAYER
 # ==========================================
 st.set_page_config(page_title="BuildMaster Enterprise ERP", page_icon="🏗️", layout="wide", initial_sidebar_state="expanded")
 
 def init_enterprise_state():
-    # Structural Control Arrays
+    # Attempt to load persistent storage first
+    if load_state_from_db():
+        # Ensure remaining session states are populated if not DB stored
+        if 'app_settings' not in st.session_state:
+            st.session_state.app_settings = {"company_name": "Global Builders Inc", "white_label": False, "cloud_sync": True, "offline_mode": False}
+        if "ai_messages" not in st.session_state:
+            st.session_state.ai_messages = [{"role": "assistant", "content": "Hello! I am your AI Construction Assistant. Ask me about house costs in Punjab, brick calculations, or roof slab estimates!"}]
+        return
+
+    # Structural Control Arrays (Fallback Defaults)
     if 'projects' not in st.session_state:
         st.session_state.projects = [
             {"id": "PRJ-2026-001", "name": "Smith Luxury Outdoor Suite", "region": "US Southwest", "status": "Active", "progress": 45.0, "template": False, "role": "Project Manager", "version": 4},
@@ -55,21 +120,22 @@ def init_enterprise_state():
     if 'app_settings' not in st.session_state:
         st.session_state.app_settings = {"company_name": "Global Builders Inc", "white_label": False, "cloud_sync": True, "offline_mode": False}
         
-    # New states for AI Assistant Chat
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = [
             {"role": "assistant", "content": "Hello! I am your AI Construction Assistant. Ask me about house costs in Punjab, brick calculations, or roof slab estimates!"}
         ]
 
-    # ADDED FEATURE: Global System Action History Tracking Log
     if 'action_history' not in st.session_state:
         st.session_state.action_history = [
             {"Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Module": "System Core", "Action": "Engine Online", "Details": "Relational structural invariants initialized safely."}
         ]
+        
+    # Once initial default state is set, persist it to SQLite
+    save_state_to_db()
 
 init_enterprise_state()
 
-# ADDED FEATURE: Global Logging Handler Utility Function
+# Global Logging Handler Utility Function
 def log_system_action(module_name, action_type, detail_string):
     st.session_state.action_history.append({
         "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -77,6 +143,8 @@ def log_system_action(module_name, action_type, detail_string):
         "Action": action_type,
         "Details": detail_string
     })
+    # Seamlessly trigger SQLite persistence across the application on every logged action
+    save_state_to_db()
 
 # ==========================================
 # MODULE 1: INTERACTIVE ENTERPRISE DASHBOARD & PM
@@ -85,7 +153,6 @@ def render_project_dashboard():
     st.title("📊 Multi-Project Control Center")
     st.write("Real-time telemetry across active portfolios, resource lifecycles, and governance roles.")
     
-    # Global Metrics Metrics Grid
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Managed Portfolios", len(st.session_state.projects))
     m2.metric("Active Runs", len([p for p in st.session_state.projects if p["status"]=="Active"]))
@@ -94,7 +161,6 @@ def render_project_dashboard():
     
     st.write("---")
     
-    # ADDED FEATURE ELEMENT: Appended "📜 System Action Audit Logs" as Tab 4 to preserve your layout perfectly
     t1, t2, t3, t4 = st.tabs(["Project Portfolios", "Interactive Gantt Timeline", "Cloning & Template Center", "📜 System Action Audit Logs"])
     
     with t1:
@@ -111,9 +177,9 @@ def render_project_dashboard():
                 act = st.selectbox("Action", ["Modify Engine", "Clone Blueprint", "Archive Stack", "Purge Line"], key=f"act_{proj['id']}")
                 if act == "Archive Stack" and proj["status"] != "Archived":
                     st.session_state.projects[i]["status"] = "Archived"
-                    # ADDED LOG ENTRY
                     log_system_action("Portfolio Hub", "Archive Action", f"Moved project identity {proj['id']} into system archives.")
                     st.toast("Project moved to archive.")
+                    st.rerun()
     
     with t2:
         st.subheader("Milestone Management & Production Gantt")
@@ -135,12 +201,10 @@ def render_project_dashboard():
             if st.form_submit_button("Execute High-Fidelity Replication"):
                 new_id = f"PRJ-2026-{random.randint(100,999)}"
                 st.session_state.projects.append({"id": new_id, "name": target_name, "region": target_reg, "status": "Active", "progress": 0.0, "template": False, "role": "Admin", "version": 1})
-                # ADDED LOG ENTRY
                 log_system_action("Portfolio Hub", "Project Duplication", f"Cloned target matrix framework into new identifier: {new_id}")
                 st.success(f"Successfully operationalized {new_id} via structural duplication patterns.")
                 st.sidebar.info("System refresh required to draw layout matrices.")
 
-    # ADDED FEATURE PANEL: Renders the active history collection streams securely
     with t4:
         st.subheader("Real-Time Application Activity Log Streams")
         st.write("Verifiable activity logs captured across global interface runtimes.")
@@ -175,14 +239,12 @@ def render_boq_engine():
             c_eq = f_col2.number_input("Machinery/Equipment Cost Allocation", value=0.0)
             
             if st.form_submit_button("Commit Line Item Array to System Core"):
-                # Auto numbering strategy calculation
                 trade_code = trade_select.split(" ")[0]
                 item_count = len(st.session_state.master_boq[st.session_state.master_boq["Trade"] == trade_select]) + 1
                 generated_item_no = f"{trade_code}.01.{item_count:03d}"
                 
                 new_row = {"Project ID": p_id, "Item No": generated_item_no, "Trade": trade_select, "Description": desc_input, "Qty": q_val, "Unit": u_str, "Mat Unit Cost": c_mat, "Lab Unit Cost": c_lab, "Equip Unit Cost": c_eq}
                 st.session_state.master_boq = pd.concat([st.session_state.master_boq, pd.DataFrame([new_row])], ignore_index=True)
-                # ADDED LOG ENTRY
                 log_system_action("BOQ Engine", "Line Entry Insertion", f"Appended calculation item [{generated_item_no}] directly into active portfolio matrix.")
                 st.toast(f"Committed {generated_item_no} cleanly.")
                 st.rerun()
@@ -193,13 +255,11 @@ def render_boq_engine():
         if st.button("Invoke AI Design Agent Optimization Pipeline"):
             with st.spinner("Executing structural validation layers..."):
                 time.sleep(1.5)
-                # Mock AI heuristic expansion mapping to target project architecture
                 ai_rows = [
                     {"Project ID": p_id, "Item No": "01.01.901", "Trade": "01 - General Conditions", "Description": "AI Optimization Variance Mitigation Buffer", "Qty": 1.0, "Unit": "LS", "Mat Unit Cost": 0.0, "Lab Unit Cost": 250.0, "Equip Unit Cost": 0.0},
                     {"Project ID": p_id, "Item No": "22.01.902", "Trade": "22 - Plumbing/Mech", "Description": "High-Efficiency Gas Delivery Interlock System", "Qty": 1.0, "Unit": "Set", "Mat Unit Cost": 450.0, "Lab Unit Cost": 180.0, "Equip Unit Cost": 50.0}
                 ]
                 st.session_state.master_boq = pd.concat([st.session_state.master_boq, pd.DataFrame(ai_rows)], ignore_index=True)
-                # ADDED LOG ENTRY
                 log_system_action("BOQ AI Pipeline", "AI Generative Takeoff", "Triggered baseline structural context optimization array extension pass safely.")
                 st.success("AI Synthesis Engine parsed specification requirements and appended calibrated line components.")
                 st.rerun()
@@ -209,7 +269,6 @@ def render_boq_engine():
     
     active_boq = st.session_state.master_boq[st.session_state.master_boq["Project ID"] == p_id].copy()
     if not active_boq.empty:
-        # Dynamic Multi-Component Accounting Calculations
         active_boq["Material Total"] = active_boq["Qty"] * active_boq["Mat Unit Cost"]
         active_boq["Labor Total"] = active_boq["Qty"] * active_boq["Lab Unit Cost"]
         active_boq["Equipment Total"] = active_boq["Qty"] * active_boq["Equip Unit Cost"]
@@ -238,7 +297,6 @@ def render_cost_estimator():
         st.warning("Empty records pool. Base values compute at zero margins.")
         return
         
-    # Apply dynamic scaling factors
     base_m = (active_boq["Qty"] * active_boq["Mat Unit Cost"]).sum() * region_db["material_index"]
     base_l = (active_boq["Qty"] * active_boq["Lab Unit Cost"]).sum() * region_db["labor_multiplier"]
     base_e = (active_boq["Qty"] * active_boq["Equip Unit Cost"]).sum()
@@ -260,7 +318,6 @@ def render_cost_estimator():
     with col_c2:
         st.subheader("Consolidated Ledger Summary")
         
-        # Real-time compounding mathematical equations
         contingency_total = raw_subtotal * (c_pct / 100.0)
         leveraged_base = raw_subtotal + contingency_total
         
@@ -268,13 +325,11 @@ def render_cost_estimator():
         profit_yield = (leveraged_base + overhead_total) * (p_pct / 100.0)
         pre_tax_sub = leveraged_base + overhead_total + profit_yield
         
-        # Dynamic compounding calculation logic for macroeconomic structural elements
         escalation_adjustment = pre_tax_sub * ((1 + inf_pct/100.0)**elapsed_years - 1)
         taxable_basis = pre_tax_sub + escalation_adjustment
         tax_total = taxable_basis * (tax_pct / 100.0)
         grand_total_estimate = taxable_basis + tax_total
         
-        # UI Display Block Architecture
         sym = region_db["currency"]
         st.metric("Raw Baseline Subtotal (Adjusted Geo-Index)", f"{sym}{raw_subtotal:,.2f}")
         st.metric(f"Contingency Pool Cushion ({c_pct}%)", f"{sym}{contingency_total:,.2f}")
@@ -308,7 +363,6 @@ def render_drawing_measurement():
         
     with col_d2:
         st.subheader("Takeoff Vector Viewport Visualization Layer Container")
-        # Render geometric trace layers for visualization mockup mapping layout positions
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=[1, 5, 5, 1, 1], y=[1, 1, 4, 4, 1], fill="toself", name="Main Slab Spatial Layout Boundary Outline", line=dict(color="Cyan", width=3)))
         fig.add_trace(go.Scatter(x=[2, 4, 4, 2, 2], y=[2, 2, 3, 3, 2], fill="toself", name="Island Structure Counter Overlay Layer Location", line=dict(color="Gold", width=2)))
@@ -330,7 +384,6 @@ def render_material_management():
         target_sku = st.selectbox("Select Target Replenishment Asset SKU", st.session_state.inventory["SKU"])
         order_volume = st.number_input("Target Purchasing Order Procurement Multiplier Volume", min_value=1.0, value=25.0)
         if st.button("Generate legally binding corporate PO Manifest Stream"):
-            # ADDED LOG ENTRY
             log_system_action("Logistics", "PO Generation", f"Procured an automated delivery asset volume of {order_volume} units for SKU: {target_sku}")
             st.success(f"PO sequence triggered successfully for SKU item {target_sku} for an aggregated delivery asset volume of {order_volume} units.")
             
@@ -358,7 +411,6 @@ def render_site_management():
         
         if st.button("Transmit Field Entry to Master Chain Records Ledger"):
             st.session_state.site_log.append({"Timestamp": datetime.datetime.now(), "Weather": weather_condition, "Diary": site_diary_str, "Coordinates": geo_tag_string})
-            # ADDED LOG ENTRY
             log_system_action("Field System", "Journal Ingestion", f"Logged field entry telemetry at vector marker {geo_tag_string}")
             st.toast("Field record archived successfully.")
             
@@ -387,7 +439,6 @@ def render_reporting():
         st.write("---")
         st.markdown("**Export Format Drivers**")
         
-        # Ingest dataframe memory arrays and stream target representations cleanly
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             st.session_state.master_boq.to_excel(writer, sheet_name='Master_BOQ_Matrix_Ledger', index=False)
@@ -403,12 +454,9 @@ def render_reporting():
         if st.button("📄 Generate Executive Client PDF Package", use_container_width=True):
             st.success("White-label document asset stream formatted, watermarked, compiled, and finalized cleanly.")
 
-        # ----------------------------------------------------
-        # ADDED FEATURE: Data Portability Suite (CSV Import/Export)
-        # ----------------------------------------------------
+        # Data Portability Suite (CSV Import/Export)
         st.markdown("### 📤 Relational Data Portability Port")
         
-        # Core Master BOQ Data Export
         boq_csv_bytes = st.session_state.master_boq.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📤 Export Active BOQ Database Stack (.CSV)",
@@ -418,7 +466,6 @@ def render_reporting():
             use_container_width=True
         )
         
-        # Core Master BOQ Data Import Gateway
         uploaded_csv_stream = st.file_uploader("📥 Ingest External Structural Data Matrix Stream (.CSV)", type=["csv"])
         if uploaded_csv_stream is not None:
             try:
@@ -433,9 +480,6 @@ def render_reporting():
             except Exception as import_error:
                 st.error(f"Error handling file execution stream: {str(import_error)}")
 
-        # ----------------------------------------------------
-        # ADDED FEATURE: Real Working Executive Document Download
-        # ----------------------------------------------------
         st.markdown("### 📄 Print-Ready Executive Document Asset Engine")
         
         executive_summary_manifest = f"""============================================================
@@ -461,6 +505,70 @@ END OF REPORT MANIFEST
             mime="application/octet-stream",
             use_container_width=True
         )
+
+        # ==========================================
+        # ADDED FEATURE 1: PROFESSIONAL PDF REPORT GENERATOR (FPDF)
+        # ==========================================
+        st.markdown("### 📑 Professional True-PDF Report Generator")
+        if FPDF_AVAILABLE:
+            class ProfessionalPDF(FPDF):
+                def header(self):
+                    self.set_font('Arial', 'B', 14)
+                    self.cell(0, 10, f"{st.session_state.app_settings['company_name']} - Enterprise Blueprint", 0, 1, 'C')
+                    self.set_font('Arial', 'I', 8)
+                    self.cell(0, 5, f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 0, 1, 'C')
+                    self.ln(5)
+                
+                def footer(self):
+                    self.set_y(-15)
+                    self.set_font('Arial', 'I', 8)
+                    self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+            if st.button("Generate Formatted Professional PDF Report", use_container_width=True):
+                with st.spinner("Compiling structural data matrices..."):
+                    pdf = ProfessionalPDF()
+                    pdf.add_page()
+                    
+                    pdf.set_font('Arial', 'B', 12)
+                    pdf.cell(0, 10, "Active Managed Portfolios:", ln=True)
+                    pdf.set_font('Arial', '', 10)
+                    for proj in st.session_state.projects:
+                        pdf.cell(0, 8, f"- [{proj['id']}] {proj['name']} | Status: {proj['status']} | Progress: {proj['progress']}%", ln=True)
+                    pdf.ln(5)
+
+                    pdf.set_font('Arial', 'B', 12)
+                    pdf.cell(0, 10, "Master Bill of Quantities Snapshot (Top Items):", ln=True)
+                    pdf.set_font('Arial', 'B', 9)
+                    
+                    # Create Table Header
+                    col_widths = [25, 100, 25, 40]
+                    pdf.cell(col_widths[0], 8, "Item No", border=1)
+                    pdf.cell(col_widths[1], 8, "Description", border=1)
+                    pdf.cell(col_widths[2], 8, "Qty", border=1)
+                    pdf.cell(col_widths[3], 8, "Trade Segment", border=1, ln=True)
+                    
+                    pdf.set_font('Arial', '', 9)
+                    for index, row in st.session_state.master_boq.head(15).iterrows():
+                        desc_text = (str(row['Description'])[:50] + '..') if len(str(row['Description'])) > 50 else str(row['Description'])
+                        pdf.cell(col_widths[0], 8, str(row['Item No']), border=1)
+                        pdf.cell(col_widths[1], 8, desc_text, border=1)
+                        pdf.cell(col_widths[2], 8, f"{row['Qty']} {row['Unit']}", border=1)
+                        pdf.cell(col_widths[3], 8, str(row['Trade']).split("-")[0].strip()[:15], border=1, ln=True)
+
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                        pdf.output(tmp.name)
+                        with open(tmp.name, "rb") as f:
+                            pdf_bytes = f.read()
+                            
+                    st.download_button(
+                        label="📥 Download Professional True-PDF Document",
+                        data=pdf_bytes,
+                        file_name="BuildMaster_Professional_Report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+        else:
+            st.error("The `fpdf` library is required for the True-PDF feature. Please run: `pip install fpdf`")
             
     with col_r2:
         st.subheader("Advanced Analytical Resource Projections & Cost Diagnostics")
@@ -472,9 +580,6 @@ END OF REPORT MANIFEST
         else:
             st.info("No active cost distributions to map.")
 
-        # ----------------------------------------------------
-        # ADDED FEATURE: Some Graphics (Multi-Component Expenditure Groupings View)
-        # ----------------------------------------------------
         st.write("---")
         st.subheader("📊 Dynamic Asset Cost Breakdown Allocation Vectors")
         if not st.session_state.master_boq.empty:
@@ -489,8 +594,63 @@ END OF REPORT MANIFEST
             fig_grouped_bar.update_layout(xaxis_title="Operational Trade Groups", yaxis_title="Unit Cost Allocation Basis ($)")
             st.plotly_chart(fig_grouped_bar, use_container_width=True)
 
+    # ==========================================
+    # ADDED FEATURE 2: VISUALIZATION (DATA-DRIVEN INSIGHTS)
+    # ==========================================
+    st.write("---")
+    st.subheader("🧠 Advanced Data-Driven Visualizations (Insights)")
+    
+    insight_tab1, insight_tab2, insight_tab3 = st.tabs(["Cost Efficiency Map", "Project Progress Distribution", "Trade Expenditure Sunburst"])
+    
+    with insight_tab1:
+        st.markdown("**Material vs Labor Cost Efficiency Scatter Matrix**")
+        st.write("Identifies high-cost variances in operational line items.")
+        if not st.session_state.master_boq.empty:
+            fig_scatter = px.scatter(
+                st.session_state.master_boq, 
+                x="Mat Unit Cost", 
+                y="Lab Unit Cost", 
+                size="Qty", 
+                color="Trade", 
+                hover_name="Description",
+                title="Labor vs Material Cost Analysis (Bubble Size = Total Quantity)",
+                template="plotly_dark"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            
+    with insight_tab2:
+        st.markdown("**Portfolio Completion Velocity Tracking**")
+        st.write("Visual completion curves mapped directly against organizational pipeline statuses.")
+        if st.session_state.projects:
+            df_proj = pd.DataFrame(st.session_state.projects)
+            fig_bar_prog = px.bar(
+                df_proj, 
+                x="name", 
+                y="progress", 
+                color="status",
+                title="Active Portfolio Completion Rates",
+                template="plotly_dark",
+                labels={"name": "Project Blueprint", "progress": "Execution Completion (%)"}
+            )
+            st.plotly_chart(fig_bar_prog, use_container_width=True)
+            
+    with insight_tab3:
+        st.markdown("**Hierarchical Trade Expenditure Volume Map**")
+        st.write("Deep proportional allocation tracking for complete relational budget structures.")
+        if not st.session_state.master_boq.empty:
+            df_sun = st.session_state.master_boq.copy()
+            df_sun["Total Burden Output"] = df_sun["Qty"] * (df_sun["Mat Unit Cost"] + df_sun["Lab Unit Cost"] + df_sun["Equip Unit Cost"])
+            fig_sunburst = px.sunburst(
+                df_sun, 
+                path=["Project ID", "Trade", "Item No"], 
+                values="Total Burden Output",
+                title="Deep Expenditure Allocation Sunburst Hierarchy",
+                template="plotly_dark"
+            )
+            st.plotly_chart(fig_sunburst, use_container_width=True)
+
 # ==========================================
-# NEW MODULE 8: 🏡 HOME PLANNING & ESTIMATORS (Features 1, 2, 3)
+# MODULE 8: 🏡 HOME PLANNING & ESTIMATORS
 # ==========================================
 def render_home_estimators():
     st.title("🏡 Home Configuration & Planning Tools")
@@ -525,7 +685,7 @@ def render_home_estimators():
         st.subheader("Feature 3: Budget-Based House Suggestion")
         st.write("Enter your budget and we'll suggest what you can build.")
         user_budget = st.number_input("Enter your maximum budget (₹)", min_value=100000, value=2000000, step=100000)
-        sqft_possible = user_budget / 1800 # Assuming ₹1800/sqft average
+        sqft_possible = user_budget / 1800 
         st.info(f"With a budget of **₹ {user_budget:,.2f}**, you can build a house of approximately **{sqft_possible:.0f} sq ft**.")
         if sqft_possible < 600:
             st.success("Suggestion: A spacious 1BHK or compact 2BHK is perfect for this budget.")
@@ -537,7 +697,7 @@ def render_home_estimators():
             st.success("Suggestion: You can build a premium Duplex or Villa!")
 
 # ==========================================
-# NEW MODULE 9: 🧱 MATERIAL & TRADE CALCULATORS (Features 6, 7, 11-18)
+# MODULE 9: 🧱 MATERIAL & TRADE CALCULATORS
 # ==========================================
 def render_material_calculators():
     st.title("🧮 Comprehensive Material & Trade Calculators")
@@ -600,7 +760,7 @@ def render_material_calculators():
         c4.metric("Feature 18: Interior Est.", f"₹ {base_area * 500:,.2f}")
 
 # ==========================================
-# NEW MODULE 10: 🏦 FINANCE & TRACKING (Features 5, 8, 10, 19)
+# MODULE 10: 🏦 FINANCE & TRACKING
 # ==========================================
 def render_finance_and_tracking():
     st.title("🏦 Construction Finance & Cost Tracking")
@@ -655,7 +815,7 @@ def render_finance_and_tracking():
         st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
-# NEW MODULE 11: 📐 ROOM CALCS & PLAN GALLERY (Features 4, 9)
+# MODULE 11: 📐 ROOM CALCS & PLAN GALLERY
 # ==========================================
 def render_plan_gallery_and_tools():
     st.title("📐 Architectural Layouts & Space Calculators")
@@ -685,7 +845,6 @@ def render_plan_gallery_and_tools():
         st.subheader("Feature 9: House Plan Gallery")
         st.write("Browse architectural sample references.")
         
-        # Using placeholder graphics via streamlit columns to represent the gallery
         col1, col2, col3 = st.columns(3)
         with col1:
             st.info("Modern 2BHK Layout")
@@ -701,30 +860,25 @@ def render_plan_gallery_and_tools():
             st.caption("Pool, 5 beds, home theater.")
 
 # ==========================================
-# NEW MODULE 12: 🤖 AI CHATBOT (Feature 20)
+# MODULE 12: 🤖 AI CHATBOT
 # ==========================================
 def render_ai_assistant():
     st.title("🤖 Feature 20: AI Home Construction Assistant")
     st.write("Ask me anything about construction costs, material estimates, and regional pricing!")
     
-    # Display chat history
     for message in st.session_state.ai_messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Chat input
     if prompt := st.chat_input("E.g., 'How much will a 1200 sq ft house cost in Punjab?'"):
-        # Add user message
         st.session_state.ai_messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate mock AI response based on keywords
         with st.chat_message("assistant"):
             response = "I am a simulated AI assistant for this construction portal. "
             prompt_lower = prompt.lower()
             
-            # --- START OF CONDITIONAL CHAIN ---
             if "punjab" in prompt_lower and "cost" in prompt_lower:
                 response = "In Punjab, standard construction currently averages around ₹1,400 to ₹1,800 per sq ft. For a 1200 sq ft house, you should budget approximately ₹16.8 Lakhs to ₹21.6 Lakhs depending on the finishing quality."
             elif "brick" in prompt_lower:
@@ -742,13 +896,10 @@ def render_ai_assistant():
                 response = "Material and execution costs vary by structure. Standard global metrics show material acquisition consumes 60-70% of building budgets (Steel ~22%, Cement ~14%, Bricks ~10%). You can see live geo-scaled pricing for your active project under the 'Actuated Financial Matrix' tab, or view detailed material quantities in the 'Material & Trade Calculators' panel!"
             else:
                 response = f"That's a great question about '{prompt}'. Based on current construction metrics, I can help you estimate costs, materials, or structural logistics. Try asking me about regional costs or material quantities!"
-            # --- END OF CONDITIONAL CHAIN ---
                 
-            # All interface updates and system logs execute safely here after matching completes
             st.markdown(response)
             st.session_state.ai_messages.append({"role": "assistant", "content": response})
             
-            # ADDED LOG ENTRY
             log_system_action("AI Chatbot", "Query Answered", f"Successfully addressed prompt: '{prompt[:35]}...'")
 
 # ==========================================
@@ -771,11 +922,11 @@ def main():
                 "🧱 Logistics & Inventory Ledger",
                 "👷 Field Journal Logistics",
                 "📈 Strategic BI Reporting",
-                "🏡 Home Configuration Planners",         # NEW
-                "🧮 Material & Trade Calculators",       # NEW
-                "🏦 Finance & Tracking Hub",             # NEW
-                "📏 Room Calcs & Plan Gallery",          # NEW
-                "💬 AI Construction Chatbot"             # NEW
+                "🏡 Home Configuration Planners",         
+                "🧮 Material & Trade Calculators",       
+                "🏦 Finance & Tracking Hub",             
+                "📏 Room Calcs & Plan Gallery",          
+                "💬 AI Construction Chatbot"             
             ]
         )
         
@@ -785,7 +936,6 @@ def main():
         st.session_state.app_settings["offline_mode"] = st.toggle("Local Cache Fault Recovery Failover", value=st.session_state.app_settings["offline_mode"])
         st.caption("🔒 Architecture secured under end-to-end relational data binding invariants.")
 
-    # Application Navigation Router Logic
     if module_selector == "📊 Global Portfolio Hub":
         render_project_dashboard()
     elif module_selector == "🏗️ Unified BOQ & AI Takeoff":
@@ -800,7 +950,6 @@ def main():
         render_site_management()
     elif module_selector == "📈 Strategic BI Reporting":
         render_reporting()
-    # NEW ROUTES ADDED HERE
     elif module_selector == "🏡 Home Configuration Planners":
         render_home_estimators()
     elif module_selector == "🧮 Material & Trade Calculators":
