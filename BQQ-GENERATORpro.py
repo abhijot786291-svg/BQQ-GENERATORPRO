@@ -1,6 +1,3 @@
-import sys
-st.write("Python executable:", sys.executable)
-st.write("FPDF_AVAILABLE:", FPDF_AVAILABLE) # type: ignore
 import streamlit as st # type: ignore
 import pandas as pd # type: ignore
 import numpy as np # type: ignore
