@@ -12,11 +12,11 @@ import json
 import tempfile
 
 try:
-    from fpdf import FPDF
+    from fpdf import FPDF  # type: ignore
     FPDF_AVAILABLE = True
 except ImportError:
-    st.error("The `fpdf` library is required for the True-PDF feature. Please install it via `pip install fpdf` to enable this functionality.")
     FPDF_AVAILABLE = False
+    FPDF = None
 
 # ==========================================
 # CONSTANTS & ENTERPRISE RATES REGIONAL DATABASE
